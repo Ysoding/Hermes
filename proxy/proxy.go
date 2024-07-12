@@ -3,6 +3,7 @@ package proxy
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 )
 
@@ -11,6 +12,41 @@ type Proxy struct {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
+		p.handleConnect(w, r)
+	} else {
+		p.handleHttp(w, r)
+	}
+}
+
+func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
+	destConn, err := net.Dial("tcp", r.Host)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error connecting to destination: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	defer destConn.Close()
+
+	w.WriteHeader(http.StatusOK)
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Hijacking error: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	defer clientConn.Close()
+
+	go io.Copy(destConn, clientConn)
+	io.Copy(clientConn, destConn)
+}
+
+func (p *Proxy) handleHttp(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.String()
 
 	client := &http.Client{}
